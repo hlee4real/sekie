@@ -1,0 +1,13 @@
+[package]
+name = 'sekie'
+version = '1.0.0'
+[dependencies.AptosFramework]
+git = 'https://github.com/aptos-labs/aptos-core.git'
+rev = 'main'
+subdir = 'aptos-move/framework/aptos-framework'
+[dependencies.AptosToken]
+git = 'https://github.com/aptos-labs/aptos-core.git'
+rev = 'main'
+subdir = 'aptos-move/framework/aptos-token'
+[addresses]
+admin = '27b8415702fc14fc7f1345b519bf1bbe0b6f718793ca1d69fa0e59c307ce8eae'
