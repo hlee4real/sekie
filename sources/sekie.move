@@ -256,13 +256,13 @@ module admin::sekie{
         assert!(lender_data.offered_is_made == true, E_LOAN_NOT_TAKEN);
         let now = aptos_framework::timestamp::now_seconds();
         let days = (now - lender_data.start_time) / 86400;
-        assert!(days > lender_data.days, E_DAYS_PASSED);
+        assert!(days >= lender_data.days, E_DAYS_PASSED);
         assert!(exists<Borrower>(lender_data.borrower), E_LOAN_NOT_TAKEN);
         let borrower_data = borrow_global_mut<Borrower>(lender_data.borrower);
         data.total_amount = data.total_amount - borrower_data.receiver_amount;
 
         let token_id = token::create_token_id_raw(data.creator,collection_name, token_name, borrower_data.property_version);
-        assert!(token::balance_of(lender_address, token_id) >= 1, E_NO_TOKEN_IN_TOKEN_STORE);
+        assert!(token::balance_of(collection_pool_address, token_id) >= 1, E_NO_TOKEN_IN_TOKEN_STORE);
         direct_transfer(&pool_signer_from_cap, lender, token_id, 1);
 
         let borrower_drop_data = move_from<Borrower>(lender_data.borrower);
