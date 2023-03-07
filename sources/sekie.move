@@ -3,6 +3,7 @@ module admin::sekie{
     use std::string::{String};
     use aptos_framework::account;
     use aptos_framework::coin;
+    use aptos_framework::managed_coin;
     use aptos_token::token::{Self,check_collection_exists,direct_transfer};
     use aptos_std::simple_map::{Self, SimpleMap};
     use std::bcs::to_bytes;
@@ -45,7 +46,7 @@ module admin::sekie{
 
     const E_NO_COLLECCION: u64 = 0;
     const E_NOT_INITIALIZED: u64 = 1;
-    const E_NOT_STAKING: u64 = 2;
+    const E_NOT_ADDRESS: u64 = 2;
     const E_NO_TOKEN_IN_TOKEN_STORE:u64=3;
     const E_STOPPED:u64=4;
     const E_ALREADY_INITIALIZED:u64=5;
@@ -57,6 +58,7 @@ module admin::sekie{
     const E_LOAN_NOT_TAKEN:u64=11;
     const E_DAYS_PASSED:u64=12;
 
+    //only module manager call it, to create a new pool with collection creator address, collection name, apy and number of days
     public entry fun init_collection_pool(owner: &signer,creator_addr: address, collection_name: String, apy: u64, days: u64) acquires ResourceInfo{
         let owner_address = signer::address_of(owner);
         assert!(owner_address == @admin, E_NOT_MODULE_CREATOR);
@@ -85,6 +87,7 @@ module admin::sekie{
         });
     }
 
+    //use to update apy, days and state of collection pool
     public entry fun update_pool(owner: &signer, collection_name: String, apy: u64, days: u64,state: bool) acquires ResourceInfo, CollectionPool{
         let owner_address = signer::address_of(owner);
         let collection_pool_address = get_resource_address(owner_address, collection_name);
@@ -96,15 +99,20 @@ module admin::sekie{
         data.state = state;
     }
 
-    public entry fun lender_offer(lender: &signer, collection_name: String, offer_amount: u64) acquires CollectionPool, ResourceInfo{
+    public entry fun lender_offer<CoinType>(lender: &signer, collection_name: String, offer_amount: u64) acquires CollectionPool, ResourceInfo{
         let collection_pool_address = get_resource_address(@admin,collection_name);
+
         //verify if collection pool is initialized
         assert!(exists<CollectionPool>(collection_pool_address), E_NOT_INITIALIZED);
         let data = borrow_global_mut<CollectionPool>(collection_pool_address);
         //verify if collection pool is stopped
         assert!(data.state, E_STOPPED);
         data.total_amount = data.total_amount + offer_amount;
-        coin::transfer<0x1::aptos_coin::AptosCoin>(lender, collection_pool_address, offer_amount);
+        let pool_signer_from_cap = account::create_signer_with_capability(&data.cap);
+        if(!coin::is_account_registered<CoinType>(collection_pool_address)){
+            managed_coin::register<CoinType>(&pool_signer_from_cap);
+        };
+        coin::transfer<CoinType>(lender, collection_pool_address, offer_amount);
         move_to<Lender>(lender, Lender{
             borrower: @admin,
             collection_name,
@@ -116,7 +124,7 @@ module admin::sekie{
         });
     }
 
-    public entry fun lender_revoke(lender: &signer, collection_name:String) acquires ResourceInfo, Lender, CollectionPool{
+    public entry fun lender_revoke<CoinType>(lender: &signer, collection_name:String) acquires ResourceInfo, Lender, CollectionPool{
         let lender_address = signer::address_of(lender);
         let collection_pool_address = get_resource_address(@admin,collection_name);
         assert!(exists<CollectionPool>(collection_pool_address), E_NOT_INITIALIZED);
@@ -125,9 +133,9 @@ module admin::sekie{
         assert!(data.state, E_STOPPED);
         let lender_data = borrow_global_mut<Lender>(lender_address);
         assert!(lender_data.collection_name == collection_name, E_COLLECTION_MISMATCH);
-        assert!(lender_data.offered_is_made, E_LOAN_TAKEN);
+        assert!(lender_data.offered_is_made == false, E_LOAN_TAKEN);
         data.total_amount = data.total_amount - lender_data.offer_amount;
-        coin::transfer<0x1::aptos_coin::AptosCoin>(&pool_signer_from_cap, lender_address, lender_data.offer_amount);
+        coin::transfer<CoinType>(&pool_signer_from_cap, lender_address, lender_data.offer_amount);
         let revoke_data = move_from<Lender>(lender_address);
         let Lender{
             borrower:_,
@@ -140,7 +148,7 @@ module admin::sekie{
         } = revoke_data;
     }
 
-    public entry fun borrow_select(borrower: &signer, collection_name: String, token_name: String, property_version: u64, lender: address) acquires CollectionPool, ResourceInfo, Lender{
+    public entry fun borrow_select<CoinType>(borrower: &signer, collection_name: String, token_name: String, property_version: u64, lender: address) acquires CollectionPool, ResourceInfo, Lender{
         let borrower_address = signer::address_of(borrower);
         let collection_pool_address = get_resource_address(@admin,collection_name);
         assert!(exists<CollectionPool>(collection_pool_address), E_NOT_INITIALIZED);
@@ -154,7 +162,7 @@ module admin::sekie{
 
         let lender_data = borrow_global_mut<Lender>(lender);
         assert!(lender_data.collection_name == collection_name, E_COLLECTION_MISMATCH);
-        assert!(lender_data.offered_is_made, E_LOAN_TAKEN);
+        assert!(lender_data.offered_is_made == false, E_LOAN_TAKEN);
         lender_data.offered_is_made = true;
         lender_data.start_time = now;
         lender_data.apy = data.apy;
@@ -174,16 +182,16 @@ module admin::sekie{
             property_version,
             token_name,
         });
-        coin::transfer<0x1::aptos_coin::AptosCoin>(&pool_signer_from_cap, borrower_address, lender_data.offer_amount);
+        coin::transfer<CoinType>(&pool_signer_from_cap, borrower_address, lender_data.offer_amount);
     }
 
-    public entry fun borrower_pay_loan(borrower: &signer) acquires CollectionPool, ResourceInfo, Borrower, Lender{
+    public entry fun borrower_pay_loan<CoinType>(borrower: &signer, collection_name: String, token_name: String) acquires CollectionPool, ResourceInfo, Borrower, Lender{
         let borrower_address = signer::address_of(borrower);
         let now = aptos_framework::timestamp::now_seconds();
         assert!(exists<Borrower>(borrower_address),E_LOAN_NOT_TAKEN);
 
         let borrower_data = borrow_global_mut<Borrower>(borrower_address);
-        let collection_pool_address = get_resource_address(@admin,borrower_data.collection_name);
+        let collection_pool_address = get_resource_address(@admin,collection_name);
         assert!(exists<CollectionPool>(collection_pool_address), E_NOT_INITIALIZED);
 
         let data = borrow_global_mut<CollectionPool>(collection_pool_address);
@@ -197,12 +205,17 @@ module admin::sekie{
         let days = (now - borrower_data.start_time) / 86400;
         assert!(days <= borrower_data.days, E_DAYS_PASSED);
 
-        let interest_amt = days * borrower_data.apy * borrower_data.receiver_amount;
+        if (days < borrower_data.days && days % 86400 != 0) {
+            //to-do: handle rounding, example: days = 8000/86400 -> days = 0 but it should be 1
+            days = days + 1;
+        };
+
+        let interest_amt =  days * borrower_data.apy / 100 / 365 * borrower_data.receiver_amount; //example: APY = 160% and days = 10, receiver_amount = 98864000 then interest_amt = 160/100/365 * 10 * 98864000 = 4333764
         let total_amt = interest_amt + borrower_data.receiver_amount;
-        let token_id = token::create_token_id_raw(data.creator,data.collection_name, borrower_data.token_name, borrower_data.property_version);
-        assert!(token::balance_of(borrower_address, token_id) >= 1, E_NO_TOKEN_IN_TOKEN_STORE);
+        let token_id = token::create_token_id_raw(data.creator,collection_name, token_name, borrower_data.property_version);
+        assert!(token::balance_of(collection_pool_address, token_id) >= 1, E_NO_TOKEN_IN_TOKEN_STORE);
         direct_transfer(&pool_signer_from_cap, borrower, token_id, 1);
-        coin::transfer<0x1::aptos_coin::AptosCoin>(borrower,  borrower_data.lender, total_amt);
+        coin::transfer<CoinType>(borrower,  borrower_data.lender, total_amt);
         data.total_amount = data.total_amount - borrower_data.receiver_amount;
 
         let lender_drop_data = move_from<Lender>(borrower_data.lender);
@@ -229,7 +242,7 @@ module admin::sekie{
         } = borrower_drop_data;
     }
 
-    public entry fun lender_claim_token(lender: &signer, collection_name: String) acquires CollectionPool, Lender, Borrower, ResourceInfo{
+    public entry fun lender_claim_token(lender: &signer, collection_name: String, token_name: String) acquires CollectionPool, Lender, Borrower, ResourceInfo{
         let lender_address = signer::address_of(lender);
         let collection_pool_address = get_resource_address(@admin,collection_name);
         assert!(exists<CollectionPool>(collection_pool_address), E_NOT_INITIALIZED);
@@ -240,7 +253,7 @@ module admin::sekie{
         assert!(exists<Lender>(lender_address), E_NOT_INITIALIZED);
 
         let lender_data = borrow_global_mut<Lender>(lender_address);
-        assert!(lender_data.offered_is_made==true, E_LOAN_NOT_TAKEN);
+        assert!(lender_data.offered_is_made == true, E_LOAN_NOT_TAKEN);
         let now = aptos_framework::timestamp::now_seconds();
         let days = (now - lender_data.start_time) / 86400;
         assert!(days > lender_data.days, E_DAYS_PASSED);
@@ -248,7 +261,7 @@ module admin::sekie{
         let borrower_data = borrow_global_mut<Borrower>(lender_data.borrower);
         data.total_amount = data.total_amount - borrower_data.receiver_amount;
 
-        let token_id = token::create_token_id_raw(data.creator,data.collection_name, borrower_data.token_name, borrower_data.property_version);
+        let token_id = token::create_token_id_raw(data.creator,collection_name, token_name, borrower_data.property_version);
         assert!(token::balance_of(lender_address, token_id) >= 1, E_NO_TOKEN_IN_TOKEN_STORE);
         direct_transfer(&pool_signer_from_cap, lender, token_id, 1);
 
@@ -277,10 +290,9 @@ module admin::sekie{
     }
 
     fun get_resource_address(addr:address,string:String): address acquires ResourceInfo {
-        assert!(exists<ResourceInfo>(addr), E_NOT_STAKING);
+        assert!(exists<ResourceInfo>(addr), E_NOT_ADDRESS);
         let maps = borrow_global<ResourceInfo>(addr);
-        let staking_address = *simple_map::borrow(&maps.resource_map, &string);
-        staking_address
-
+        let res_address = *simple_map::borrow(&maps.resource_map, &string);
+        res_address
     }
 }
