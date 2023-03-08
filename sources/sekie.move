@@ -109,6 +109,8 @@ module admin::sekie{
         assert!(data.state, E_STOPPED);
         data.total_amount = data.total_amount + offer_amount;
         let pool_signer_from_cap = account::create_signer_with_capability(&data.cap);
+
+        //register coinstore for resource account in each collection pool
         if(!coin::is_account_registered<CoinType>(collection_pool_address)){
             managed_coin::register<CoinType>(&pool_signer_from_cap);
         };
